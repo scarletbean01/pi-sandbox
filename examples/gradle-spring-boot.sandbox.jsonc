@@ -1,0 +1,114 @@
+{
+  // ==========================================================================
+  // Project sandbox: Gradle + Spring Boot microservice
+  //
+  // Location: <repo-root>/.pi/sandbox.json  (commit it - the whole team gets
+  // the same guardrails). Merges ON TOP of the global ~/.pi/agent/sandbox.json:
+  // lists are additive, denies always win, "mode" here would override global.
+  //
+  // Command globs: `*` matches any text. Bash commands are split on
+  // && || ; | and every segment must pass. A trailing " *" also matches
+  // the bare command, so "git push *" denies bare "git push" too.
+  // Path globs: `*` = one segment, `**` = any depth, relative patterns
+  // resolve against the repo root.
+  // ==========================================================================
+
+  "commands": {
+    "allow": [
+      // ---- Gradle (wrapper only; system gradle stays in ask-territory) ----
+      "./gradlew *",            // build, test, bootRun, ... (also bare ./gradlew)
+
+      // ---- JDK / JVM inspection ----
+      "java -version",
+      "java -jar *",            // run the built boot jar
+      "jps *",
+      "jstack *",
+
+      // ---- Read-only git ----
+      "git status",
+      "git diff *",
+      "git log *",
+      "git show *",
+      "git branch *",
+      "git rev-parse *",
+
+      // ---- File inspection (useful inside compound commands) ----
+      "ls *",
+      "cat *",
+      "grep *",
+      "find *",
+      "head *",
+      "tail *",                 // tail -f build/logs is handy during bootRun
+      "jq *",
+      "env",
+      "pwd",
+
+      // ---- Local endpoint testing (actuator, health checks) ----
+      "curl *localhost*",
+      "curl *127.0.0.1*",
+      "curl *0.0.0.0*",
+      "http :8080*",            // if you use HTTPie instead
+
+      // ---- Process management for the dev loop ----
+      "lsof -i*",
+      "ps *"
+    ],
+
+    "deny": [
+      // ---- Side-effecting Gradle tasks (carve-outs from "./gradlew *") ----
+      "./gradlew *publish*",        // publish / publishToMavenLocal
+      "./gradlew *upload*",
+      "./gradlew bootBuildImage*",  // builds+pushes OCI image; allow if wanted
+      "./gradlew wrapper*",       // don't let the agent upgrade Gradle itself
+
+      // ---- Git mutations that lose work or leave the machine ----
+      "git push *",
+      "git reset --hard *",
+      "git clean *",
+      "git rebase *",
+      "git commit *",           // review diffs yourself; uncomment if you allow it
+
+      // ---- Filesystem hazards ----
+      "rm -rf *",
+      "rm -fr *",
+      "chmod *",
+      "chown *",
+
+      // ---- Environment-wide changes ----
+      "kill *",                 // killing the wrong java pid hurts; ask instead
+      "pkill *",
+      "docker *",               // docker compose up is fine interactively -> ask
+      "kubectl *",
+      "sdk *",                  // SDKMAN switching JDK versions
+      "brew *",
+      "apt *"
+    ]
+  },
+
+  "paths": {
+    "allow": [
+      // Default "./**" (project subtree) comes from the built-in defaults.
+      // Uncomment if the agent should inspect the Gradle cache / daemon logs:
+      // "~/.gradle/**"
+    ],
+
+    "deny": [
+      // ---- Spring secrets & keystores ----
+      "**/*.jks",
+      "**/*.p12",
+      "**/*.keystore",
+      "**/keystore.*",
+      "**/truststore.*",
+      // Production configs often carry real credentials. The built-in
+      // "**/.env*" deny already covers .env files; extend as needed:
+      "**/application-prod.yml",
+      "**/application-prod.yaml",
+      "**/application-prod.properties",
+      "**/secrets/**",
+
+      // ---- Don't let the agent edit generated/lock state carelessly ----
+      "./.gradle/**"            // project-local gradle metadata (anchored to repo root;
+                                // "**/.gradle/**" would also deny ~/.gradle, the cache)
+    ]
+  }
+}

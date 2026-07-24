@@ -1,0 +1,19 @@
+{
+  "name": "pi-sandbox-extension",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Configurable guardrails for pi: allowlist/denylist/ask policy for bash commands and filesystem paths",
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "dependencies": {
+    "picomatch": "4.0.5"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.81.1",
+    "@earendil-works/pi-tui": "0.81.1",
+    "typescript": "7.0.2"
+  }
+}
