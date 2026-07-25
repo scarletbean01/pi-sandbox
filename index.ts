@@ -1,8 +1,16 @@
 import { Text } from "@earendil-works/pi-tui";
-import type { ExtensionAPI, ExtensionContext, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
+import {
+	createBashTool,
+	createLocalBashOperations,
+	type ExtensionAPI,
+	type ExtensionContext,
+	type ToolCallEventResult,
+	type UserBashEventResult,
+} from "@earendil-works/pi-coding-agent";
 import { askCommand, askPath, askTool } from "./ask";
+import { buildBwrapCommand, probeBwrap, resetBwrapProbe } from "./bwrap";
 import { segmentBinary } from "./commands";
-import { loadConfig, saveToConfig, type LoadedConfig, type SandboxConfig } from "./config";
+import { loadConfig, saveToConfig, type BwrapConfig, type LoadedConfig, type SandboxConfig } from "./config";
 import { evaluate, type EvalResult, type PolicyState } from "./policy";
 
 const STATUS_KEY = "sandbox";
@@ -11,6 +19,9 @@ export default function (pi: ExtensionAPI) {
 	let loaded: LoadedConfig | undefined;
 	let onceCache = new Set<string>();
 	let trusted = false;
+	let bwrapActive = false;
+	let bwrapToolRegistered = false;
+	let degradedWarned = false;
 
 	pi.registerFlag("no-sandbox", {
 		description: "Disable the sandbox policy for this invocation (not persisted)",
@@ -39,14 +50,62 @@ export default function (pi: ExtensionAPI) {
 			cwd: ctx.cwd,
 			disabled: pi.getFlag("no-sandbox") === true,
 			onceCache,
+			bwrap: { active: bwrapActive, autoAllow: current.effective.bwrap.autoAllow },
 		};
 	}
 
 	function updateStatus(ctx: ExtensionContext, config: SandboxConfig): void {
 		const disabled = pi.getFlag("no-sandbox") === true;
 		const mode = disabled ? "off (--no-sandbox)" : config.mode;
-		ctx.ui.setStatus(STATUS_KEY, `sandbox: ${mode}`);
+		const bwrapMark = config.bwrap.enabled ? (bwrapActive ? "+bwrap" : "(bwrap!)") : "";
+		ctx.ui.setStatus(STATUS_KEY, `sandbox: ${mode}${bwrapMark}`);
 	}
+
+	/** Probe bwrap and register the sandboxed bash override (once per session). */
+	function setupBwrap(ctx: ExtensionContext, cfg: BwrapConfig): void {
+		bwrapActive = false;
+		if (!cfg.enabled) return;
+
+		const probe = probeBwrap();
+		bwrapActive = probe.available;
+		if (!probe.available && ctx.hasUI && !degradedWarned) {
+			degradedWarned = true;
+			ctx.ui.notify(
+				`sandbox: bwrap unavailable (${probe.reason}) — bash runs UNSANDBOXED (fallback: ${cfg.fallback})`,
+				"warning",
+			);
+		}
+
+		if (bwrapToolRegistered) return;
+		bwrapToolRegistered = true;
+		const bashTool = createBashTool(ctx.cwd, {
+			spawnHook: ({ command, cwd, env }) => {
+				if (!bwrapActive) {
+					if (cfg.fallback === "block") {
+						throw new Error('sandbox: bwrap unavailable and bwrap.fallback is "block"');
+					}
+					return { command, cwd, env };
+				}
+				return { command: buildBwrapCommand(command, cfg, cwd, env), cwd, env };
+			},
+		});
+		pi.registerTool({
+			...bashTool,
+			execute: async (id, params, signal, onUpdate, _toolCtx) => bashTool.execute(id, params, signal, onUpdate),
+		});
+	}
+
+	pi.on("user_bash", (event, ctx): UserBashEventResult | undefined => {
+		const cfg = ensureLoaded(ctx).effective.bwrap;
+		if (!cfg.enabled || !cfg.userBash || !bwrapActive) return undefined;
+		const local = createLocalBashOperations();
+		return {
+			operations: {
+				exec: (command, cwd, options) =>
+					local.exec(buildBwrapCommand(command, cfg, cwd, options.env ?? process.env), cwd, options),
+			},
+		};
+	});
 
 	function persistAllow(
 		ctx: ExtensionContext,
@@ -146,7 +205,11 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		loaded = undefined;
 		onceCache = new Set<string>();
-		updateStatus(ctx, ensureLoaded(ctx).effective);
+		resetBwrapProbe();
+		degradedWarned = false;
+		const config = ensureLoaded(ctx).effective;
+		setupBwrap(ctx, config.bwrap);
+		updateStatus(ctx, config);
 	});
 
 	pi.registerMessageRenderer("sandbox-policy", (message, _options, theme) => {
@@ -190,6 +253,10 @@ export default function (pi: ExtensionAPI) {
 						fmt("commands.deny", c.commands.deny),
 						fmt("paths.allow", c.paths.allow),
 						fmt("paths.deny", c.paths.deny),
+						`bwrap: enabled=${c.bwrap.enabled} autoAllow=${c.bwrap.autoAllow} network=${c.bwrap.network} fallback=${c.bwrap.fallback} userBash=${c.bwrap.userBash}`,
+						fmt("bwrap.allowWrite", c.bwrap.allowWrite),
+						fmt("bwrap.denyRead", c.bwrap.denyRead),
+						fmt("bwrap.maskEnv", c.bwrap.maskEnv),
 					].join("\n"),
 				});
 				return;
@@ -206,6 +273,7 @@ export default function (pi: ExtensionAPI) {
 					`tools: ${c.tools.allow.length} allow / ${c.tools.deny.length} deny (default: ${c.tools.default})`,
 					`commands: ${c.commands.allow.length} allow / ${c.commands.deny.length} deny (proxies: ${c.commands.proxies.join(", ") || "none"})`,
 					`paths: ${c.paths.allow.length} allow / ${c.paths.deny.length} deny`,
+					`bwrap: ${c.bwrap.enabled ? (bwrapActive ? "active" : "UNAVAILABLE - bash unsandboxed") : "disabled"} (autoAllow: ${c.bwrap.autoAllow}, network: ${c.bwrap.network}, fallback: ${c.bwrap.fallback})`,
 				].join("\n"),
 				"info",
 			);

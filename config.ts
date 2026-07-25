@@ -17,11 +17,31 @@ export interface CommandPolicyConfig extends PatternList {
 	proxies: string[];
 }
 
+export interface BwrapConfig {
+	/** Master switch: wrap bash commands in bubblewrap. */
+	enabled: boolean;
+	/** Bash-derived asks become allows when bwrap is confirmed working. Denies never downgrade. */
+	autoAllow: boolean;
+	/** "allow" = unchanged network; "off" = --unshare-net. */
+	network: "allow" | "off";
+	/** Extra writable paths inside the sandbox (build caches etc.). Missing paths skipped. */
+	allowWrite: string[];
+	/** Paths hidden from the sandbox (tmpfs over dirs, /dev/null over files). Missing paths skipped. */
+	denyRead: string[];
+	/** Globs matched against env var names; matches are unset inside the sandbox. */
+	maskEnv: string[];
+	/** Behavior when bwrap is missing or fails to launch: "ask" = degrade to guardrail, "block" = fail bash. */
+	fallback: "ask" | "block";
+	/** Also sandbox the user's own ! / !! commands. */
+	userBash: boolean;
+}
+
 export interface SandboxConfig {
 	mode: "enforce" | "off";
 	tools: ToolsPolicy;
 	commands: CommandPolicyConfig;
 	paths: PatternList;
+	bwrap: BwrapConfig;
 }
 
 /** Config file shape: lists present when parsed, scalars optional for layering. */
@@ -30,6 +50,7 @@ export interface PartialConfig {
 	tools?: { allow: string[]; deny: string[]; default?: "allow" | "ask" };
 	commands?: { allow: string[]; deny: string[]; proxies?: string[] };
 	paths?: PatternList;
+	bwrap?: Partial<BwrapConfig>;
 }
 
 /**
@@ -59,6 +80,16 @@ export const DEFAULT_CONFIG: SandboxConfig = {
 	paths: {
 		allow: ["./**"],
 		deny: ["**/.env", "**/.env.*", "**/.git/**", "**/.ssh/**", "**/id_rsa*", "**/*.pem"],
+	},
+	bwrap: {
+		enabled: true,
+		autoAllow: false,
+		network: "allow",
+		allowWrite: ["~/.gradle", "~/.m2", "~/.npm", "~/.cache"],
+		denyRead: ["~/.ssh", "~/.aws", "~/.gnupg", "~/.kube", "~/.docker/config.json"],
+		maskEnv: ["AWS_*", "GITHUB_TOKEN", "*_API_KEY", "*_SECRET*"],
+		fallback: "ask",
+		userBash: false,
 	},
 };
 
@@ -167,6 +198,20 @@ export function parseConfigFile(filePath: string): PartialConfig | undefined {
 	};
 
 	config.paths = parsePatternList(record.paths);
+
+	if (typeof record.bwrap === "object" && record.bwrap !== null) {
+		const b = record.bwrap as Record<string, unknown>;
+		const bwrap: Partial<BwrapConfig> = {};
+		if (typeof b.enabled === "boolean") bwrap.enabled = b.enabled;
+		if (typeof b.autoAllow === "boolean") bwrap.autoAllow = b.autoAllow;
+		if (b.network === "allow" || b.network === "off") bwrap.network = b.network;
+		if (isStringArray(b.allowWrite)) bwrap.allowWrite = b.allowWrite;
+		if (isStringArray(b.denyRead)) bwrap.denyRead = b.denyRead;
+		if (isStringArray(b.maskEnv)) bwrap.maskEnv = b.maskEnv;
+		if (b.fallback === "ask" || b.fallback === "block") bwrap.fallback = b.fallback;
+		if (typeof b.userBash === "boolean") bwrap.userBash = b.userBash;
+		config.bwrap = bwrap;
+	}
 	return config;
 }
 
@@ -209,6 +254,31 @@ export function mergeConfigs(
 			// Override (not concat) so [] disables unwrapping.
 			proxies:
 				projectConfig?.commands?.proxies ?? globalConfig?.commands?.proxies ?? DEFAULT_CONFIG.commands.proxies,
+		},
+		bwrap: {
+			enabled: projectConfig?.bwrap?.enabled ?? globalConfig?.bwrap?.enabled ?? DEFAULT_CONFIG.bwrap.enabled,
+			autoAllow:
+				projectConfig?.bwrap?.autoAllow ?? globalConfig?.bwrap?.autoAllow ?? DEFAULT_CONFIG.bwrap.autoAllow,
+			network: projectConfig?.bwrap?.network ?? globalConfig?.bwrap?.network ?? DEFAULT_CONFIG.bwrap.network,
+			allowWrite: [
+				...DEFAULT_CONFIG.bwrap.allowWrite,
+				...(globalConfig?.bwrap?.allowWrite ?? []),
+				...(projectConfig?.bwrap?.allowWrite ?? []),
+			],
+			denyRead: [
+				...DEFAULT_CONFIG.bwrap.denyRead,
+				...(globalConfig?.bwrap?.denyRead ?? []),
+				...(projectConfig?.bwrap?.denyRead ?? []),
+			],
+			maskEnv: [
+				...DEFAULT_CONFIG.bwrap.maskEnv,
+				...(globalConfig?.bwrap?.maskEnv ?? []),
+				...(projectConfig?.bwrap?.maskEnv ?? []),
+			],
+			fallback:
+				projectConfig?.bwrap?.fallback ?? globalConfig?.bwrap?.fallback ?? DEFAULT_CONFIG.bwrap.fallback,
+			userBash:
+				projectConfig?.bwrap?.userBash ?? globalConfig?.bwrap?.userBash ?? DEFAULT_CONFIG.bwrap.userBash,
 		},
 		paths: {
 			allow: [

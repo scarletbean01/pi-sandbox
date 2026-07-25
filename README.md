@@ -36,6 +36,35 @@ runs; **unlisted** → you are prompted (see Ask UX). In non-interactive modes
 errors also fail closed. Your own `!` / `!!` shell commands (`user_bash`) are
 never gated.
 
+## The bwrap layer (real boundary for bash)
+
+On top of the pattern-matching guardrail, the extension can wrap **every bash
+command** in [bubblewrap](https://github.com/containers/bubblewrap), giving
+kernel-level enforcement for the shell (the file tools run in pi's own
+process and are not covered — the guardrail remains their only gate):
+
+- **Filesystem:** read-only root; writable = cwd, `$TMPDIR`, and
+  `bwrap.allowWrite` (default: common build caches). `bwrap.denyRead` paths
+  are hidden entirely (empty tmpfs over dirs, `/dev/null` over files) —
+  default: ssh/aws/gnupg/kube/docker credentials.
+- **Env:** variables matching `bwrap.maskEnv` globs are unset inside the
+  sandbox (default: `AWS_*`, `GITHUB_TOKEN`, `*_API_KEY`, `*_SECRET*`).
+- **Network:** unchanged by default; `bwrap.network: "off"` adds
+  `--unshare-net`.
+- **Process:** user/pid/ipc/uts namespaces, `--die-with-parent`,
+  `--new-session`.
+- **Auto-allow:** `bwrap.autoAllow: true` downgrades bash-derived *asks*
+  (commands and bash path tokens) to silent allows — the kernel bounds the
+  blast radius, so prompting adds nothing. Denies never downgrade; file-tool
+  asks never downgrade; auto-allow is honored only when bwrap is confirmed
+  working.
+- **Fallback:** bwrap missing/launch fails → `bwrap.fallback: "ask"` (default)
+  degrades to plain guardrail behavior with a visible warning and footer
+  marker; `"block"` fails bash closed.
+- Requires `bwrap` installed and unprivileged user namespaces enabled. Probed
+  once per session; `/reload` re-probes. Footer shows `enforce+bwrap` when
+  active, `(bwrap!)` when degraded.
+
 ## Installation
 
 The extension lives at `~/.pi/agent/extensions/sandbox/` and is auto-discovered
@@ -138,6 +167,25 @@ Every available key, with comments — also at
     // Path denylist, checked first. Built-in defaults (always active):
     // **/.env, **/.env.*, **/.git/**, **/.ssh/**, **/id_rsa*, **/*.pem
     "deny": ["**/*.jks", "**/secrets/**"]
+  },
+
+  "bwrap": {
+    // Wrap every bash command in bubblewrap (kernel-level boundary).
+    "enabled": true,
+    // Bash-derived asks run sandboxed without prompting (denies unaffected).
+    "autoAllow": false,
+    // "allow" = unchanged network; "off" = --unshare-net.
+    "network": "allow",
+    // Extra writable paths (build caches). Missing paths skipped.
+    "allowWrite": ["~/.gradle", "~/.m2", "~/.npm", "~/.cache"],
+    // Hidden paths: tmpfs over dirs, /dev/null over files.
+    "denyRead": ["~/.ssh", "~/.aws", "~/.gnupg", "~/.kube", "~/.docker/config.json"],
+    // Env vars (glob-matched by name) unset inside the sandbox.
+    "maskEnv": ["AWS_*", "GITHUB_TOKEN", "*_API_KEY", "*_SECRET*"],
+    // "ask" = degrade to guardrail when bwrap unavailable; "block" = fail closed.
+    "fallback": "ask",
+    // Also sandbox your own ! / !! commands.
+    "userBash": false
   }
 }
 ```
@@ -190,7 +238,8 @@ If you are an AI agent running *inside* a sandboxed pi session:
 
 - Source: `index.ts` (wiring), `policy.ts` (engine), `commands.ts` (command
   matching, proxy unwrapping), `paths.ts` (path matching), `config.ts`
-  (loading/merging/persistence, JSONC), `ask.ts` (dialogs)
+  (loading/merging/persistence, JSONC), `ask.ts` (dialogs), `bwrap.ts`
+  (bubblewrap wrapping)
 - Typecheck: `npx tsc --noEmit` in the extension directory (strict,
   `erasableSyntaxOnly`)
 - Design history and test matrix: [`PLAN.md`](PLAN.md)

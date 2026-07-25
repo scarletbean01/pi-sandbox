@@ -74,9 +74,10 @@ matching; that is accepted.
 
 ## Tasks
 
-**Status: all tasks implemented and verified (unit assertions + live tmux/print-mode
-runs). Includes JSONC comment support, the command-regex/bare-form matcher fixes,
-the tools policy (12), and proxy unwrapping (13). Example project config:
+**Status: all tasks implemented and verified (unit assertions + live tmux runs,
+including real bwrap execution). Layers: tools policy, command policy with rtk
+proxy unwrapping, path policy, JSONC layered config, and the bwrap kernel
+boundary with auto-allow (15–18). Example project config:
 `examples/gradle-spring-boot.sandbox.jsonc`.**
 
 ### 1. Scaffold extension directory
@@ -224,3 +225,52 @@ the tools policy (12), and proxy unwrapping (13). Example project config:
   a scratch extension, verify deny blocks it and default-ask prompts; simulate
   `rtk git push` (wrapped deny) and `rtk git status` (wrapped allow) via bash
   tool calls in tmux; `/reload` picks up edited `tools`/`proxies` keys
+
+### 15. bwrap config section (`config.ts`)
+
+- `BwrapConfig`: `{ enabled, autoAllow, network: "allow" | "off", allowWrite[],
+  denyRead[], maskEnv[], fallback: "ask" | "block", userBash }`
+- Defaults: `enabled: true`, `autoAllow: false`, `network: "allow"`,
+  `allowWrite: ["~/.gradle", "~/.m2", "~/.npm", "~/.cache"]`,
+  `denyRead: ["~/.ssh", "~/.aws", "~/.gnupg", "~/.kube", "~/.docker/config.json"]`,
+  `maskEnv: ["AWS_*", "GITHUB_TOKEN", "*_API_KEY", "*_SECRET*"]`,
+  `fallback: "ask"`, `userBash: false`
+- Parse + merge like other sections (lists concat, scalars override)
+
+### 16. bwrap wrapper (`bwrap.ts`)
+
+- `probeBwrap()`: cached per session — `bwrap --version` + trivial launch
+  (`--unshare-user --ro-bind / / -- true`); `/reload` re-probes
+- `buildBwrapCommand(original, cfg, cwd, env)`: namespaces
+  (`--unshare-user/pid/ipc/uts --die-with-parent --new-session`),
+  `--ro-bind / / --dev /dev --proc /proc`, writable binds for cwd + `$TMPDIR` +
+  existing allowWrite dirs, `--tmpfs` over existing denyRead dirs,
+  `--ro-bind /dev/null` over denyRead files (missing paths skipped),
+  `--unsetenv` for env keys matching maskEnv globs, `--unshare-net` when
+  network off, `--chdir cwd`, `-- sh -c '<single-quote-escaped original>'`
+- Bash tool override via `createBashTool(cwd, { spawnHook })` registered on
+  `session_start` when enabled; spawnHook rewrites the command. Guardrail's
+  `tool_call` still sees the original (pre-wrap) command — layering preserved
+- Fallback: bwrap unavailable → `"ask"`: run unwrapped + one-time degraded
+  warning + footer marker; `"block"`: spawnHook throws (tool errors, fail-closed)
+- `user_bash`: when `bwrap.userBash: true`, supply custom `operations.exec`
+  that runs the bwrap-wrapped command; default exempt
+
+### 17. Auto-allow integration (`policy.ts`, `index.ts`)
+
+- `PolicyState.bwrap: { active: boolean, autoAllow: boolean }`
+- In `evaluate()`: bash-derived `ask` verdicts (command AND path-token kinds)
+  downgrade to allow when `active && autoAllow`; denies never downgrade;
+  file-tool asks never downgrade
+- Footer: `sandbox: enforce+bwrap` normally, degraded marker when bash runs
+  unsandboxed; `/sandbox status` and `/sandbox list` include the bwrap section
+
+### 18. bwrap tests
+
+- Unit: arg building (binds, tmpfs/null denies, unsetenv globs, unshare-net,
+  escaping, missing-path skips), config parse/merge, autoAllow verdict matrix
+- Live (tmux): write outside cwd fails inside sandbox (`touch /etc/x` /
+  `touch ~/<file>`), cwd write works, `cat ~/.ssh/id_rsa` fails (tmpfs deny),
+  masked env var empty, autoAllow flips a would-be-ask command to silent run,
+  fallback=ask path with bwrap "missing" (PATH manipulation) prompts with
+  degraded warning

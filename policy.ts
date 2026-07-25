@@ -9,6 +9,8 @@ export interface PolicyState {
 	disabled: boolean;
 	/** Session-scoped "allow once" cache (exact strings). */
 	onceCache: Set<string>;
+	/** bwrap layer state: active = wrapping confirmed working this session. */
+	bwrap?: { active: boolean; autoAllow: boolean };
 }
 
 export interface EvalResult {
@@ -142,7 +144,14 @@ export function evaluate(toolName: string, input: Record<string, unknown>, state
 		const command = typeof input.command === "string" ? input.command : "";
 		const onceKey = `cmd:${command}`;
 		if (state.onceCache.has(onceKey)) return { verdict: "allow", onceKey };
-		return evaluateBash(command, state);
+		const result = evaluateBash(command, state);
+		// Auto-allow: bash-derived asks (command and path-token kinds) run
+		// kernel-bounded, so they downgrade to allow when bwrap is active.
+		// Denies never downgrade; file-tool asks are not bash-derived.
+		if (result.verdict === "ask" && state.bwrap?.active && state.bwrap.autoAllow) {
+			return { verdict: "allow", onceKey };
+		}
+		return result;
 	}
 
 	return evaluateFileTool(toolName, input, state);

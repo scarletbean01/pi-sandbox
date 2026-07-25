@@ -71,5 +71,27 @@
       "**/*.jks",
       "**/secrets/**"
     ]
+  },
+
+  // Kernel-level boundary for bash commands (pattern-matching guardrail
+  // still applies to everything; bwrap only wraps bash). Requires bwrap
+  // installed + unprivileged user namespaces. Probed once per session.
+  "bwrap": {
+    "enabled": true,       // master switch
+    "autoAllow": false,    // true: bash asks run sandboxed WITHOUT prompting
+                           // (denies never downgrade; file-tool asks unaffected)
+    "network": "allow",    // "allow" | "off" (--unshare-net)
+    "allowWrite": [        // extra writable paths (build caches); missing skipped
+      "~/.gradle", "~/.m2", "~/.npm", "~/.cache"
+    ],
+    "denyRead": [          // hidden: tmpfs over dirs, /dev/null over files
+      "~/.ssh", "~/.aws", "~/.gnupg", "~/.kube", "~/.docker/config.json"
+    ],
+    "maskEnv": [           // env vars (glob by name) unset inside the sandbox
+      "AWS_*", "GITHUB_TOKEN", "*_API_KEY", "*_SECRET*"
+    ],
+    "fallback": "ask",     // bwrap unavailable: "ask" = degrade to guardrail,
+                           // "block" = fail bash closed
+    "userBash": false      // also sandbox your own ! / !! commands
   }
 }
