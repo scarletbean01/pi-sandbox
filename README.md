@@ -218,6 +218,48 @@ when trusted, else the global one, and notifies where it landed.
 The footer shows `sandbox: enforce` / `sandbox: off` so a permissive state is
 never silent.
 
+## Troubleshooting
+
+**`bwrap unavailable (... user namespaces disabled?)` on Ubuntu 24.04+**
+Ubuntu 24.04 restricts unprivileged user-namespace creation via AppArmor
+(`kernel.apparmor_restrict_unprivileged_userns = 1`). Verify with
+`sysctl kernel.apparmor_restrict_unprivileged_userns` (`0` or "No such file"
+= unaffected). Fix: grant bwrap a profile instead of disabling the restriction:
+
+```bash
+sudo tee /etc/apparmor.d/bwrap > /dev/null << 'EOF'
+abi <abi/4.0>,
+include <tunables/global>
+
+profile bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+  include if exists <local/bwrap>
+}
+EOF
+sudo systemctl reload apparmor
+```
+
+**WSL**
+- WSL2 required; WSL1 lacks the kernel features bwrap needs (`wsl -l -v` from
+  PowerShell to check, `wsl --set-version <distro> 2` to upgrade). The Ubuntu
+  24.04 AppArmor restriction also applies inside WSL2 — same check, same fix.
+- Windows interop fails inside the sandbox: `cmd.exe`, `powershell.exe`, and
+  anything resolved via `/mnt/c/*` (WSL hands Windows binaries to the host over
+  a Unix socket the sandbox blocks). Watch for WSL's `appendWindowsPath`
+  silently resolving commands like `code` to a `.exe`. Working from
+  `/mnt/c/...` directories is fine (cwd is bound writable); only `.exe`
+  invocation is blocked.
+
+**Sandboxed command fails with `Read-only file system`**
+Expected for writes outside cwd/`$TMPDIR`/`bwrap.allowWrite`. Add the path to
+`bwrap.allowWrite` (project or global config) — build caches like `~/.gradle`
+are already in the defaults.
+
+**A secret is readable inside the sandbox**
+`bwrap.denyRead` only hides what exists at launch time and matches exactly;
+new credential locations need an entry. Missing paths are skipped silently —
+typos in `denyRead` fail open, so double-check with `/sandbox list`.
+
 ## Notes for AI agents
 
 If you are an AI agent running *inside* a sandboxed pi session:
