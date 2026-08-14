@@ -36,6 +36,65 @@ runs; **unlisted** → you are prompted (see Ask UX). In non-interactive modes
 errors also fail closed. Your own `!` / `!!` shell commands (`user_bash`) are
 never gated.
 
+## Radius disclosure to the agent
+
+In addition to the reactive gating above, every turn the extension appends an
+**"Operational radius"** block to the system prompt so the agent proactively
+knows its operational radius instead of learning it from a block reason. The
+block is rendered by `disclosure.ts` and projected from the existing
+`paths.allow` / `paths.deny` / `bwrap` config — it adds no new policy and
+introduces no new failure mode.
+
+Concretely, the block looks like:
+
+```
+Operational radius — obey it. `*` = one path segment, `**` = any depth,
+`~/` = home, `./` = <project root>. Denies are unbypassable; do not ask
+the user to lift them or seek workarounds.
+
+Operate within:
+  /home/deplague/.pi/agent/extensions/sandbox/**
+  ~/Projects/**
+
+Do not touch:
+  **/.env, **/.env.*, **/.git/**, **/.ssh/**, **/id_rsa*, **/*.pem
+  (+N more from project/global config; run /sandbox list)
+```
+
+- `*`/`**`/`~/`/`./*` semantics are stated once in the header so the agent
+  doesn't have to guess.
+- Cwd-anchored patterns (`./**`, `./foo/**`) are **resolved to absolute
+  paths** for display so the rendered string and the paths the agent reasons
+  about are byte-identical to what the engine will compare against.
+- The deny list is **flat merged** (built-in defaults + global + project) and
+  **capped** to keep the block small; when truncated, it shows the exact
+  remaining count and points to `/sandbox list` for the full set. Built-in
+  defaults are never truncated — only project/global overflows past the cap.
+- When `mode === "off"` or the session was launched with `--no-sandbox`, the
+  block is replaced with a single line: `Sandbox is OFF — no radius is in force;
+  operate freely.` This is the authoritative mode signal: it correctly
+  overrides any signal baked at `session_start`.
+- When `bwrap.active && bwrap.autoAllow`, an extra bracketed footnote
+  explains that unlisted bash path tokens may run without prompting because
+  the kernel bounds the blast radius.
+
+**Snapshot semantics.** The block is a turn-snapshot: it reflects the radius
+as of the *start* of the turn. If the agent triggers an "Always allow …"
+choice mid-turn, **enforcement updates immediately** (the `tool_call` handler
+reads live config every call), but the *advisory* block updates on the next
+turn. This lag is one-directional (under-discloses newly-allowed paths,
+never relaxes denies) and so cannot cause the agent to over-reach — it can
+only cause it to under-utilize a freshly-allowed path for the rest of one
+turn. Harmless.
+
+**Honesty qualification.** Path enforcement is **best-effort enforced +
+guided**, not guaranteed. The `extractPathTokens` heuristic covers tokens
+starting with `/`, `~`, `.`, etc., and `cd` targets, but does not catch
+`--flag=PATH` form, quoted paths with spaces, or shell substitutions. This
+is the documented guardrail threat model (see top of this file). The
+disclosure block helps the agent self-comply; enforcement is a guide, not a
+boundary.
+
 ## The bwrap layer (real boundary for bash)
 
 On top of the pattern-matching guardrail, the extension can wrap **every bash
@@ -133,6 +192,8 @@ Every available key, with comments — also at
 {
   // "enforce": apply policy. "off": allow everything.
   // Toggle: /sandbox on|off (persists here). Bypass once: pi --no-sandbox.
+  // In either case the per-turn "Operational radius" block reflects the
+  // current mode (full radius in enforce, single negated line in off).
   "mode": "enforce",
 
   "tools": {
@@ -272,6 +333,11 @@ If you are an AI agent running *inside* a sandboxed pi session:
   *why* you need it so they can make an informed choice.
 - `ctx_execute`-style tools and interpreters (`python3 -c`, `node -e`) may be
   denied even when bash works — that is deliberate, not a malfunction.
+- The **"Operational radius" block** in your system prompt is authoritative
+  for *where* you may operate. Obey it: stays within the allow list, never
+  touch the deny list. Denies are unbypassable — do not pester the user to
+  lift them or seek workarounds. When the block says the sandbox is OFF, no
+  radius is in force and you may operate freely.
 - When editing `sandbox.json` by hand: JSONC comments are fine; keep deny
   entries for anything destructive; prefer narrow allows (`git status`) over
   broad ones (`git *`); test with `/sandbox list` after `/reload`.
@@ -281,7 +347,9 @@ If you are an AI agent running *inside* a sandboxed pi session:
 - Source: `index.ts` (wiring), `policy.ts` (engine), `commands.ts` (command
   matching, proxy unwrapping), `paths.ts` (path matching), `config.ts`
   (loading/merging/persistence, JSONC), `ask.ts` (dialogs), `bwrap.ts`
-  (bubblewrap wrapping)
+  (bubblewrap wrapping), `disclosure.ts` (per-turn radius block renderer)
 - Typecheck: `npx tsc --noEmit` in the extension directory (strict,
   `erasableSyntaxOnly`)
+- Renderer unit assertions: `bun run scripts/verify-disclosure.ts` (covers
+  the §6.1 acceptance matrix from `TASKS.md`)
 - Design history and test matrix: [`PLAN.md`](PLAN.md)

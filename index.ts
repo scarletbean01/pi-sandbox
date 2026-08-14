@@ -12,6 +12,7 @@ import { buildBwrapCommand, probeBwrap, resetBwrapProbe } from "./bwrap";
 import { segmentBinary } from "./commands";
 import { loadConfig, saveToConfig, type BwrapConfig, type LoadedConfig, type SandboxConfig } from "./config";
 import { evaluate, type EvalResult, type PolicyState } from "./policy";
+import { renderRadiusBlock } from "./disclosure";
 
 const STATUS_KEY = "sandbox";
 
@@ -200,6 +201,29 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		return { block: true, reason: "sandbox: policy evaluation did not converge" };
+	});
+
+	pi.on("before_agent_start", (event, ctx) => {
+		// Per-turn: append the Operational radius block to the system prompt so
+		// the agent proactively knows its operational radius. Returns the
+		// *full* systemPrompt (concatenated) to preserve sibling extensions'
+		// chained contributions — `before_agent_start` replaces, not appends.
+		const state = stateFor(ctx);
+		// Disable the block when enforcement is inactive under either regime:
+		// --no-sandbox (per-invocation override) flips `state.disabled`; /sandbox
+		// off (in-session or persisted) flips `state.config.mode`. Either alone
+		// must produce the negated line so the agent's guidance never disagrees
+		// with reality (Q6/θ, TASK 2.2).
+		const disabled = state.disabled || state.config.mode === "off";
+		const text = renderRadiusBlock({
+			cwd: state.cwd,
+			disabled,
+			pathsAllow: state.config.paths.allow,
+			denyLayers: ensureLoaded(ctx).denyLayers,
+			bwrapActive: state.bwrap?.active ?? false,
+			bwrapAutoAllow: state.config.bwrap.autoAllow,
+		});
+		return { systemPrompt: event.systemPrompt + "\n\n" + text };
 	});
 
 	pi.on("session_start", (_event, ctx) => {

@@ -301,6 +301,19 @@ export interface LoadedConfig {
 	projectFile: string;
 	globalMalformed: boolean;
 	projectMalformed: boolean;
+	/**
+	 * Per-layer path deny arrays, used by the radius disclosure renderer
+	 * for deterministic capping (built-ins always, then global, then project).
+	 * `project` is the per-layer raw config (already merged when project is
+	 * untrusted stays an empty array); the renderer does not need this slice
+	 * to be authoritative — it only needs to know which patterns came from
+	 * which layer so truncation hits project fills last.
+	 */
+	denyLayers: {
+		builtin: string[];
+		global: string[];
+		project: string[];
+	};
 }
 
 /**
@@ -323,6 +336,11 @@ export function loadConfig(cwd: string, projectTrusted: boolean): LoadedConfig {
 		projectFile,
 		globalMalformed: globalExists && globalParsed === undefined,
 		projectMalformed: projectExists && projectParsed === undefined,
+		denyLayers: {
+			builtin: [...DEFAULT_CONFIG.paths.deny],
+			global: globalParsed?.paths?.deny ?? [],
+			project: projectParsed?.paths?.deny ?? [],
+		},
 	};
 }
 
