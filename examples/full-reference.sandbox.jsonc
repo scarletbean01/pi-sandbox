@@ -4,13 +4,44 @@
   //
   // Locations: ~/.pi/agent/sandbox.json (global) and <project>/.pi/sandbox.json
   // (project overlay, honored only when the project is trusted).
-  // Lists merge (concat); scalars (mode, tools.default, commands.proxies)
-  // override: project > global > built-in default. Denies always win.
+  // Lists merge (concat); scalars override global > built-in default.
+  // Denies always win.
+  //
+  // A PROJECT FILE CAN ONLY TIGHTEN THE POLICY. These project settings are
+  // ignored (with a warning) unless the GLOBAL file sets
+  // "allowProjectLoosening": true:
+  //   mode: "off", bwrap.enabled: false, bwrap.autoAllow: true,
+  //   bwrap.fallback: "ask" (over a global "block"), bwrap.network: "allow"
+  //   (over a global "off"), tools.default: "allow" (over "ask"),
+  //   bwrap.allowSockets, bwrap.allowWrite outside the project, selfEdit.
+  // Project allow-lists still add on top (that is what trust means); they are
+  // tagged "(project)" in /sandbox list.
+  //
+  // A file that fails to parse puts the sandbox in STRICT mode (mode enforce,
+  // tools.default ask, autoAllow off, bwrap.fallback block) and the footer
+  // shows "sandbox: CONFIG ERROR" — it never silently drops your denies.
+  // Unknown keys / wrong types / patterns that don't compile are warned about.
   // ==========================================================================
 
-  // "enforce" = apply policy. "off" = allow everything.
-  // Toggle: /sandbox on|off. One-off bypass: pi --no-sandbox.
+  // "enforce" = apply the pattern guardrail. "off" = guardrail off.
+  // bwrap is an INDEPENDENT switch: with mode "off" bash still runs inside
+  // bwrap (the agent is told so). pi --no-sandbox turns off BOTH.
+  // /sandbox on|off changes this for the SESSION only;
+  // /sandbox off --persist writes it to the global file.
   "mode": "enforce",
+
+  // Global-only. Let the agent edit this extension's own directory. Needed
+  // only when developing the extension itself (the policy files and the
+  // extension code are write-protected for the agent by default).
+  "selfEdit": false,
+
+  // Global-only. Let a project config loosen the policy (see above).
+  "allowProjectLoosening": false,
+
+  // Global-only. Append one JSONL record per decision to
+  // ~/.pi/agent/sandbox-audit.jsonl (never file contents or env values;
+  // rotated at 5 MB).
+  "audit": false,
 
   "tools": {
     // Tool-name allowlist (command-glob: `*` matches any text).
@@ -26,13 +57,18 @@
       "mcp_*"
       // "bash"                 // nuclear option: disable shell access
     ],
-    // Verdict for CUSTOM tools in neither list: "allow" (default) or "ask".
-    // Built-ins are unaffected (they always use command/path policy).
-    "default": "allow"
+    // Verdict for CUSTOM tools (MCP / extension tools) in neither list:
+    // "ask" (default) or "allow". Built-ins are unaffected (they always use
+    // command/path policy). In non-interactive runs (pi -p, RPC) unlisted
+    // custom tools are BLOCKED under "ask" — list them in "allow".
+    "default": "ask"
   },
 
   "commands": {
-    // Bash allowlist. Commands split on && || ; | — EVERY segment must pass.
+    // Bash allowlist. Bash is parsed with tree-sitter-bash: EVERY command
+    // (separators, pipes, & backgrounding, $(...), `...`, <(...), subshells,
+    // loop/if bodies, function bodies) must pass. Words the sandbox cannot
+    // resolve statically ($VAR, $(...), {a,b}) never match an allow — they ask.
     // `*` matches any text (incl. slashes). Trailing " *" also matches the
     // bare command ("git push *" denies bare "git push").
     "allow": [
@@ -42,9 +78,14 @@
       "npm *"
     ],
     // Bash denylist, checked BEFORE allow — carve exceptions out of broad
-    // allows. Hard-denied by the extension and non-overridable:
-    // eval *, bash -c *, sh -c *, sudo *, rm -rf /, rm -rf ~*, mkfs*,
-    // dd *of=/dev/*
+    // allows. Hard-denied by the extension and non-overridable (matched
+    // against every disguise: /bin/bash -c, env sh -c, rm -fr /, ...):
+    // eval, bash/sh/zsh/dash/ksh/fish -c, busybox sh, sudo/doas/su/pkexec/run0,
+    // rm -rf / ~ /* ~/*, mkfs*, dd of=/dev/*, chmod/chown -R /, and writes
+    // to raw block devices.
+    // ALWAYS ASK (never allow-matched, never auto-allowed, never persisted as
+    // a prefix): python -c/-m, node -e, perl -e, ruby -e, bun -e, deno eval,
+    // xargs, find -exec/-delete, git -c.
     "deny": [
       "git push *",
       "rm -rf *"
@@ -57,8 +98,9 @@
   },
 
   "paths": {
-    // Path allowlist for read/write/edit/grep/find/ls AND path-like tokens
-    // in bash commands (incl. cd targets). `*` = one segment, `**` = any
+    // Path allowlist for read/write/edit/grep/find/ls AND path words in bash
+    // commands (args, --opt=value, bare words that exist or match a deny,
+    // redirect targets, cd targets, glob expansions, $HOME/~). `*` = one segment, `**` = any
     // depth. ~ expands; relative patterns resolve against the session cwd;
     // patterns starting with **/ match anywhere. Default when empty: ["./**"]
     "allow": [
@@ -67,29 +109,65 @@
     ],
     // Path denylist, checked first. Built-in defaults (always active):
     // **/.env, **/.env.*, **/.git/**, **/.ssh/**, **/id_rsa*, **/*.pem
+    // grep/find/ls results are also filtered: denied files never show up in
+    // listings or matches.
     "deny": [
       "**/*.jks",
       "**/secrets/**"
     ]
   },
 
-  // Kernel-level boundary for bash commands (pattern-matching guardrail
-  // still applies to everything; bwrap only wraps bash). Requires bwrap
-  // installed + unprivileged user namespaces. Probed once per session.
+  // Kernel-level boundary for bash commands (the file tools run in pi's own
+  // process; the pattern guardrail is their only gate). Requires bwrap
+  // installed + unprivileged user namespaces. The FULL command form is probed
+  // once per session (and on /sandbox reload).
+  //
+  // Always applied: read-only root, private per-session /tmp (TMPDIR=/tmp),
+  // hidden host service sockets (/run/user/$UID: D-Bus, systemd user manager,
+  // pipewire, wayland, gpg-agent; /run/dbus, docker, podman, containerd,
+  // libvirt, snapd), --cap-drop ALL, --disable-userns (bwrap >= 0.8),
+  // user/pid/ipc/uts/cgroup namespaces. Always unset: SSH_AUTH_SOCK,
+  // DBUS_SESSION_BUS_ADDRESS, XDG_RUNTIME_DIR, DISPLAY, WAYLAND_DISPLAY, TMUX*,
+  // STY, ZELLIJ*, KITTY_LISTEN_ON, WEZTERM_*, HERDR*, HC_*, GPG_AGENT_INFO.
+  //
+  // Not isolated: with network "allow", ABSTRACT unix sockets (@/tmp/.X11-unix
+  // etc.) stay reachable — only network "off" isolates them.
   "bwrap": {
-    "enabled": true,       // master switch
+    "enabled": true,       // master switch (independent of "mode")
     "autoAllow": false,    // true: bash asks run sandboxed WITHOUT prompting
-                           // (denies never downgrade; file-tool asks unaffected)
+                           // (denies and always-ask forms never downgrade;
+                           // file-tool asks unaffected)
     "network": "allow",    // "allow" | "off" (--unshare-net)
-    "allowWrite": [        // extra writable paths (build caches); missing skipped
+    "allowWrite": [        // extra writable paths (build caches); missing skipped.
+                           // NOTE: a writable ~/.cache or ~/.npm lets a command
+                           // poison caches used OUTSIDE the sandbox; use narrower
+                           // entries (e.g. "~/.cache/pip") if that matters.
       "~/.gradle", "~/.m2", "~/.npm", "~/.cache"
     ],
-    "denyRead": [          // hidden: tmpfs over dirs, /dev/null over files
+    "readOnly": [          // paths INSIDE the writable cwd that stay read-only
+                           // (relative to cwd; missing paths skipped). Defaults
+                           // are always included; this list adds to them.
+      ".git/hooks", ".git/config", ".git/info", ".pi", ".envrc", ".vscode", ".idea", ".husky"
+    ],
+    "denyRead": [          // hidden: tmpfs over dirs, /dev/null over files.
+                           // The defaults also cover gh, git-credentials, netrc,
+                           // npmrc, pypirc, cargo, gcloud, azure, password-store,
+                           // keyrings, browser profiles, terraform credentials.
       "~/.ssh", "~/.aws", "~/.gnupg", "~/.kube", "~/.docker/config.json"
     ],
-    "maskEnv": [           // env vars (glob by name) unset inside the sandbox
+    "maskEnv": [           // env vars (glob by name) unset inside the sandbox.
+                           // Defaults also cover *TOKEN*, *PASSWORD*, *PASSWD*,
+                           // *_KEY, *CREDENTIAL*, ANTHROPIC_*, OPENAI_*.
+                           // /sandbox list shows which of your CURRENT env names
+                           // are masked (names only).
       "AWS_*", "GITHUB_TOKEN", "*_API_KEY", "*_SECRET*"
     ],
+    "allowSockets": [],    // GLOBAL ONLY. Host socket paths re-bound after the
+                           // socket masks, e.g. ["/run/docker.sock"]. Off by default.
+    "maskProjectDenies": true, // mask files/dirs in the project that match
+                           // paths.deny (depth <= 6, <= 200 hits, skipping
+                           // node_modules and .git) so `python -c 'open(".env")'`
+                           // sees nothing either. Re-scanned on /sandbox reload.
     "fallback": "ask",     // bwrap unavailable: "ask" = degrade to guardrail,
                            // "block" = fail bash closed
     "userBash": false      // also sandbox your own ! / !! commands

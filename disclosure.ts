@@ -1,5 +1,5 @@
 import * as path from "node:path";
-import * as os from "node:os";
+import { expandTilde } from "./util";
 
 /**
  * Pure renderer for the per-turn "Operational radius" block appended to the
@@ -21,6 +21,9 @@ const MAX_DENIES_SHOWN = 12;
 const HEADER_LINE =
 	"Operational radius — obey it. `*` = one path segment, `**` = any depth, `~/` = home, `./` = <project root>. Denies are unbypassable; do not ask the user to lift them or seek workarounds.";
 const NEGATED_LINE = "Sandbox is OFF — no radius is in force; operate freely.";
+/** Guardrail (pattern policy) off, but bash is still wrapped in bwrap: the agent must not think it is unbounded. */
+const GUARDRAIL_OFF_BWRAP_LINE =
+	"Guardrail is OFF; bash still runs kernel-sandboxed (bounds: writes limited to the project directory and configured cache dirs; network: ";
 const FOOTNOTE_LINE =
 	"[Bash is kernel-sandboxed with auto-allow; unlisted bash path tokens may run without prompting, bounded by the sandbox.]";
 
@@ -35,18 +38,16 @@ export interface DenyLayers {
 
 export interface RenderState {
 	cwd: string;
+	/** --no-sandbox: guardrail AND bwrap are both off. */
 	disabled: boolean;
+	/** `mode: off`: the pattern guardrail is off; bwrap (if active) still bounds bash. */
+	guardrailOff?: boolean;
+	/** bwrap network setting, shown in the bounds line when the guardrail is off. */
+	bwrapNetwork?: "allow" | "off";
 	pathsAllow: string[];
 	denyLayers: DenyLayers;
 	bwrapActive: boolean;
 	bwrapAutoAllow: boolean;
-}
-
-/** Expand `~` to $HOME for surface-level display (no fs lookup). */
-function expandTilde(p: string): string {
-	if (p === "~") return os.homedir();
-	if (p.startsWith("~/")) return path.join(os.homedir(), p.slice(2));
-	return p;
 }
 
 /**
@@ -125,6 +126,10 @@ function renderDenies(state: RenderState): string {
  */
 export function renderRadiusBlock(state: RenderState): string {
 	if (state.disabled) return NEGATED_LINE;
+	if (state.guardrailOff) {
+		if (!state.bwrapActive) return NEGATED_LINE;
+		return `${GUARDRAIL_OFF_BWRAP_LINE}${state.bwrapNetwork ?? "allow"}).`;
+	}
 
 	const parts: string[] = [HEADER_LINE, "", renderAllows(state), "", renderDenies(state)];
 

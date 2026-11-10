@@ -4,7 +4,10 @@
   //
   // Location: <repo-root>/.pi/sandbox.json  (commit it - the whole team gets
   // the same guardrails). Merges ON TOP of the global ~/.pi/agent/sandbox.json:
-  // lists are additive, denies always win, "mode" here would override global.
+  // lists are additive and denies always win. A project file can only TIGHTEN
+  // the policy: "mode": "off", bwrap.enabled: false, bwrap.autoAllow: true,
+  // tools.default: "allow", ... here are ignored (with a warning).
+  // Writes to this file by the agent are blocked; edit it yourself.
   //
   // Command globs: `*` matches any text. Bash commands are split on
   // && || ; | and every segment must pass. A trailing " *" also matches

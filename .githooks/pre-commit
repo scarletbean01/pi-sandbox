@@ -1,0 +1,6 @@
+#!/bin/sh
+# Typecheck + test gate. Enable with:  git config core.hooksPath .githooks
+set -e
+cd "$(git rev-parse --show-toplevel)"
+npm run --silent typecheck
+bun test

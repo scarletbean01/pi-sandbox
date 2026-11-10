@@ -10,7 +10,7 @@
 		"skipLibCheck": true,
 		"forceConsistentCasingInFileNames": true,
 		"noEmit": true,
-		"types": ["node"]
+		"types": ["node", "bun"]
 	},
-	"include": ["*.ts"]
+	"include": ["*.ts", "test/**/*.ts", "scripts/**/*.ts"]
 }

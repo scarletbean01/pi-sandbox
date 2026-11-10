@@ -1,8 +1,5 @@
-// Verification script for the disclosure renderer.
-// Exercises the §6.1 acceptance matrix from TASKS.md.
-// Run with: bun run scripts/verify-disclosure.ts
-
-import { renderRadiusBlock, type DenyLayers } from "../disclosure.ts";
+import { expect as bunExpect, test } from "bun:test";
+import { renderRadiusBlock, type DenyLayers } from "../disclosure";
 
 const CWD = "/home/deplague/.pi/agent/extensions/sandbox";
 
@@ -23,20 +20,14 @@ function makeLayers(over: Partial<{ builtin: string[]; global: string[]; project
 	};
 }
 
-let passed = 0;
-let failed = 0;
-
+/** Registers one test per acceptance check (the original script's assertion style). */
 function expect(name: string, cond: boolean, detail?: string) {
-	if (cond) {
-		passed++;
-		console.log(`  ✓ ${name}`);
-	} else {
-		failed++;
-		console.log(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`);
-	}
+	test(name, () => {
+		bunExpect(cond, detail).toBe(true);
+	});
 }
 
-console.log("=== 6.1.1 off-mode ===");
+// === 6.1.1 off-mode ===
 {
 	// simulates the index.ts call-site predicate: `state.disabled || state.config.mode === "off"`.
 	// Both paths must yield the negated line: --no-sandbox flips `disabled`;
@@ -71,7 +62,7 @@ console.log("=== 6.1.1 off-mode ===");
 	}
 }
 
-console.log("=== 6.1.6 cache-determinism ===");
+// === 6.1.6 cache-determinism ===
 {
 	const state = {
 		cwd: CWD,
@@ -86,7 +77,7 @@ console.log("=== 6.1.6 cache-determinism ===");
 	expect("identical state → identical string", a === b);
 }
 
-console.log("=== 6.1.2 default config (enforce) ===");
+// === 6.1.2 default config (enforce) ===
 {
 	const text = renderRadiusBlock({
 		cwd: CWD,
@@ -106,7 +97,7 @@ console.log("=== 6.1.2 default config (enforce) ===");
 	expect("no footnote in default config", !text.includes("kernel-sandboxed with auto-allow"));
 }
 
-console.log("=== 6.1.3 cwd-anchored resolution ===");
+// === 6.1.3 cwd-anchored resolution ===
 {
 	const text = renderRadiusBlock({
 		cwd: CWD,
@@ -123,7 +114,7 @@ console.log("=== 6.1.3 cwd-anchored resolution ===");
 	expect("/etc/foo/** verbatim", text.includes("/etc/foo/**"));
 }
 
-console.log("=== 6.1.4 deny capping — project fills last ===");
+// === 6.1.4 deny capping — project fills last ===
 {
 	const builtin = DEFAULT_BUILTIN; // 6 entries
 	const global = ["**/global-a", "**/global-b", "**/global-c", "**/global-d"]; // 4
@@ -156,10 +147,9 @@ console.log("=== 6.1.4 deny capping — project fills last ===");
 	expect("renders first 2 project denies", text.includes("**/proj-1") && text.includes("**/proj-2"));
 	expect("truncates proj-3", !text.includes("**/proj-3"));
 	expect("suffix says +8 more", text.includes("(+8 more from project/global config; run /sandbox list)"));
-	console.log(`  note: total ${total}, shown ${12}, remaining ${total - 12}`);
 }
 
-console.log("=== 6.1.5 autoAllow footnote ===");
+// === 6.1.5 autoAllow footnote ===
 {
 	const base = {
 		cwd: CWD,
@@ -175,7 +165,7 @@ console.log("=== 6.1.5 autoAllow footnote ===");
 	expect("footnote when both active", withFoot.includes("[Bash is kernel-sandboxed with auto-allow"));
 }
 
-console.log("=== 6.1.7 no fs imports in disclosure.ts ===");
+// === 6.1.7 no fs imports in disclosure.ts ===
 {
 	const { readFileSync } = await import("node:fs");
 	const src = readFileSync(new URL("../disclosure.ts", import.meta.url), "utf8");
@@ -186,7 +176,7 @@ console.log("=== 6.1.7 no fs imports in disclosure.ts ===");
 	expect("no node:fs import", !src.includes("from \"node:fs\"") && !src.includes("from 'node:fs'"));
 }
 
-console.log("=== 6.1.8 no timestamps / Date in output ===");
+// === 6.1.8 no timestamps / Date in output ===
 {
 	const text = renderRadiusBlock({
 		cwd: CWD,
@@ -201,7 +191,7 @@ console.log("=== 6.1.8 no timestamps / Date in output ===");
 	expect("no process.hrtime in output", !text.includes("hrtime"));
 }
 
-console.log("=== 6.1.6b: changing unrelated config field leaves block unchanged ===");
+// === 6.1.6b: changing unrelated config field leaves block unchanged ===
 {
 	const base = {
 		cwd: CWD,
@@ -232,7 +222,7 @@ console.log("=== 6.1.6b: changing unrelated config field leaves block unchanged 
 	expect("same denyLayers → same block", r3 === r4);
 }
 
-console.log("=== 6.1.9 empty-config handling ===");
+// === 6.1.9 empty-config handling ===
 {
 	const text = renderRadiusBlock({
 		cwd: CWD,
@@ -246,7 +236,16 @@ console.log("=== 6.1.9 empty-config handling ===");
 	expect("empty allow → fallback message", text.includes("(none — every path will prompt)"));
 }
 
-console.log("\n=== Summary ===");
-console.log(`passed: ${passed}`);
-console.log(`failed: ${failed}`);
-if (failed > 0) process.exit(1);
+
+// H4.7: `mode: off` (guardrail off) is independent of bwrap; --no-sandbox turns off both.
+{
+	const base = { cwd: CWD, disabled: false, pathsAllow: ["./**"], denyLayers: makeLayers(), bwrapAutoAllow: false };
+	const offWithBwrap = renderRadiusBlock({ ...base, guardrailOff: true, bwrapActive: true, bwrapNetwork: "off" });
+	expect("mode off + bwrap → kernel-sandboxed line", offWithBwrap.startsWith("Guardrail is OFF; bash still runs kernel-sandboxed"), offWithBwrap);
+	expect("mode off + bwrap → does not say 'operate freely'", !offWithBwrap.includes("operate freely"));
+	expect("mode off + bwrap → names the network bound", offWithBwrap.includes("network: off"));
+	const offNoBwrap = renderRadiusBlock({ ...base, guardrailOff: true, bwrapActive: false });
+	expect("mode off without bwrap → negated line", offNoBwrap === "Sandbox is OFF — no radius is in force; operate freely.");
+	const noSandbox = renderRadiusBlock({ ...base, disabled: true, guardrailOff: true, bwrapActive: true });
+	expect("--no-sandbox → negated line even if bwrap flag is stale", noSandbox === "Sandbox is OFF — no radius is in force; operate freely.");
+}
